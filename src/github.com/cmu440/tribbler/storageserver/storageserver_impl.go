@@ -3,7 +3,6 @@ package storageserver
 import (
 	"container/list"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -16,7 +15,7 @@ import (
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
-var _ = fmt.Println
+var leaseSeconds = storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds
 
 type storageServer struct {
 	// server infos
@@ -29,9 +28,10 @@ type storageServer struct {
 	infoRWL   sync.RWMutex
 	readyChan chan struct{}
 
-	store    map[string]interface{}
-	leases   map[string]*list.List
-	storeRWL sync.RWMutex
+	store      map[string]interface{}
+	leases     map[string]*list.List
+	storeRWL   sync.RWMutex
+	inRevoking map[string]bool
 }
 
 type leaseRecord struct {
@@ -49,16 +49,25 @@ type leaseRecord struct {
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 	ss := &storageServer{
-		numNodes:  numNodes,
-		port:      port,
-		nodeID:    nodeID,
-		readyChan: make(chan struct{}),
-		servers:   make(map[uint32]storagerpc.Node),
-		store:     make(map[string]interface{}),
-		leases:    make(map[string]*list.List),
+		numNodes:   numNodes,
+		port:       port,
+		nodeID:     nodeID,
+		readyChan:  make(chan struct{}),
+		servers:    make(map[uint32]storagerpc.Node),
+		store:      make(map[string]interface{}),
+		leases:     make(map[string]*list.List),
+		inRevoking: make(map[string]bool),
 	}
+
 	if masterServerHostPort == "" {
 		ss.isMaster = true
+	}
+	ss.servers[nodeID] = storagerpc.Node{
+		HostPort: net.JoinHostPort("localhost", strconv.Itoa(port)),
+		NodeID:   ss.nodeID,
+	}
+	if numNodes == 1 {
+		ss.isReady = true
 	}
 
 	// register RPCs
@@ -74,9 +83,10 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	go http.Serve(l, nil)
 
 	if ss.isMaster {
-		if ss.numNodes > 1 {
+		if !ss.isReady {
 			<-ss.readyChan // wait for slaves
 		}
+
 	} else {
 		err := ss.joinCluster(masterServerHostPort)
 		if err != nil {
@@ -95,26 +105,34 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 	ss.infoRWL.Lock()
 	defer ss.infoRWL.Unlock()
 
-	// add to cluster
-	if _, exisit := ss.servers[args.ServerInfo.NodeID]; !exisit {
-		ss.servers[args.ServerInfo.NodeID] = args.ServerInfo
-	}
-
-	reply.Status = storagerpc.NotReady
-	if len(ss.servers) == ss.numNodes {
-		ss.isReady = true
-		close(ss.readyChan)
-
-		// make reply
+	if ss.isReady {
 		reply.Status = storagerpc.OK
-		for k := range ss.servers {
-			reply.Servers = append(reply.Servers, ss.servers[k])
+	} else {
+		reply.Status = storagerpc.NotReady
+
+		// add to cluster
+		if _, exisit := ss.servers[args.ServerInfo.NodeID]; !exisit {
+			ss.servers[args.ServerInfo.NodeID] = args.ServerInfo
+		}
+		if len(ss.servers) == ss.numNodes {
+			ss.isReady = true
+			reply.Status = storagerpc.OK
+			close(ss.readyChan)
 		}
 	}
+
+	for k := range ss.servers {
+		reply.Servers = append(reply.Servers, ss.servers[k])
+	}
+
 	return nil
 }
 
 func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *storagerpc.GetServersReply) error {
+	if !ss.isMaster {
+		return errors.New("server is not a master")
+	}
+
 	ss.infoRWL.RLock()
 	defer ss.infoRWL.RUnlock()
 
@@ -133,7 +151,12 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
 	generalReply, value := ss.generalGet(args)
 
-	reply.Status, reply.Lease = generalReply.Status, generalReply.Lease
+	reply.Status = generalReply.Status
+	if reply.Status != storagerpc.OK {
+		return nil
+	}
+
+	reply.Lease = generalReply.Lease
 	reply.Value = value.(string)
 
 	return nil
@@ -142,8 +165,15 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
 	generalReply, value := ss.generalGet(args)
 
-	reply.Status, reply.Lease = generalReply.Status, generalReply.Lease
-	reply.Value = value.([]string)
+	reply.Status = generalReply.Status
+	if reply.Status != storagerpc.OK {
+		return nil
+	}
+
+	reply.Lease = generalReply.Lease
+	for e := value.(*list.List).Front(); e != nil; e = e.Next() {
+		reply.Value = append(reply.Value, e.Value.(string))
+	}
 
 	return nil
 }
@@ -164,9 +194,7 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 		return nil
 	}
 
-	if err := ss.revokeLease(args.Key); err != nil {
-		panic("")
-	}
+	ss.revokeLease(args.Key)
 	ss.store[args.Key] = args.Value
 	reply.Status = storagerpc.OK
 
@@ -187,7 +215,7 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	if !exisit {
 		// create a new list for the key
 		ss.store[args.Key] = list.New()
-		ss.store[args.Key].(*list.List).PushBack(args.Value)
+		ss.store[args.Key].(*list.List).PushFront(args.Value)
 		reply.Status = storagerpc.OK
 		return nil
 	}
@@ -201,10 +229,8 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		}
 	}
 
-	if err := ss.revokeLease(args.Key); err != nil {
-		panic("")
-	}
-	l.PushBack(args.Value)
+	ss.revokeLease(args.Key)
+	l.PushFront(args.Value)
 	reply.Status = storagerpc.OK
 
 	return nil
@@ -229,9 +255,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	l := ss.store[args.Key].(*list.List)
 	for e := l.Front(); e != nil; e = e.Next() {
 		if e.Value.(string) == args.Value {
-			if err := ss.revokeLease(args.Key); err != nil {
-				panic("")
-			}
+			ss.revokeLease(args.Key)
 			l.Remove(e)
 			reply.Status = storagerpc.OK
 			return nil
@@ -256,6 +280,7 @@ func (ss *storageServer) assertKeyAndServer(key string) (storagerpc.Status, bool
 	if !ss.inRange(key) {
 		return storagerpc.WrongServer, false
 	}
+
 	return storagerpc.OK, true
 }
 
@@ -271,21 +296,30 @@ func (ss *storageServer) inRange(key string) bool {
 
 	var successor uint32
 	distance := ^uint32(0)
+
 	for id := range ss.servers {
-		tmpDistance := uint32(id - hash) // [*]auto overflow, maybe -1
+		tmpDistance := uint32(id - hash) // [*]auto overflow
 		if tmpDistance < distance {
-			tmpDistance = distance
+			distance = tmpDistance
 			successor = id
 		}
 	}
 	if successor != ss.nodeID {
 		return false
 	}
+
 	return true
 }
 
 func isUserKey(key string) bool {
 	index := strings.Index(key, ":")
+	if index < 0 {
+		panic("")
+	}
+
+	if index+4 > len(key) {
+		return false
+	}
 	return key[index:index+4] == "user"
 }
 
@@ -297,73 +331,93 @@ func (ss *storageServer) generalGet(args *storagerpc.GetArgs) (*storagerpc.GetRe
 	}
 
 	ss.storeRWL.RLock()
-	defer ss.storeRWL.RUnlock()
 
 	value, exisit := ss.store[args.Key]
 	if !exisit {
+		ss.storeRWL.RUnlock()
 		return &storagerpc.GetReply{Status: storagerpc.KeyNotFound}, nil
 	}
 
+	reply := &storagerpc.GetReply{
+		Status: storagerpc.OK,
+	}
+
 	if args.WantLease {
+		// upgrade to write lock
+		ss.storeRWL.RUnlock()
+		ss.storeRWL.Lock()
+
+		// refuse the lease request
+		if ss.inRevoking[args.Key] {
+			reply.Lease = storagerpc.Lease{Granted: false}
+			ss.storeRWL.Unlock()
+			return reply, value
+		}
+
+		// append a lease record
 		leaseList := ss.leases[args.Key]
 		if leaseList == nil {
 			ss.leases[args.Key] = list.New()
 			leaseList = ss.leases[args.Key]
 		}
 
-		// append a lease record
-		leaseSeconds := storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds
 		leaseList.PushBack(&leaseRecord{
 			expirationTime: time.Now().Add(time.Second * time.Duration(leaseSeconds)),
 			hostport:       args.HostPort,
 		})
-	}
 
-	// send back reply
-	reply := &storagerpc.GetReply{
-		Status: storagerpc.OK,
-		Lease: storagerpc.Lease{
+		reply.Lease = storagerpc.Lease{
 			Granted:      true,
 			ValidSeconds: storagerpc.LeaseSeconds,
-		},
+		}
+
+		ss.storeRWL.Unlock()
+		return reply, value
 	}
 
+	ss.storeRWL.RUnlock()
 	return reply, value
 }
 
 // Revoke leases for the givin key from all lease holders.
 // This func assume that it has already get a WLock
-func (ss *storageServer) revokeLease(key string) error {
+func (ss *storageServer) revokeLease(key string) {
 	leaseList, exisit := ss.leases[key]
 	if !exisit {
-		return nil
+		return
 	}
+
+	ss.inRevoking[key] = true
+	defer func() {
+		delete(ss.inRevoking, key)
+	}()
+	done := make(chan *rpc.Call, 1)
 
 	for e := leaseList.Front(); e != nil; e = e.Next() {
 		lr := e.Value.(*leaseRecord)
+
+		// not expired, need to revoke
 		if lr.expirationTime.After(time.Now()) {
-			// not expired, need to revoke
+			duration := lr.expirationTime.Sub(time.Now())
+
+			// release the lock to prevent blocking
+			ss.storeRWL.Unlock()
 			client, err := rpc.DialHTTP("tcp", lr.hostport)
-			if err != nil {
-				return err
+			if err == nil {
+				args := &storagerpc.RevokeLeaseArgs{Key: key}
+				var reply storagerpc.RevokeLeaseReply
+				client.Go("LeaseCallbacks.RevokeLease", args, &reply, done)
 			}
-
-			args := &storagerpc.RevokeLeaseArgs{Key: key}
-			var reply storagerpc.RevokeLeaseReply
-
-			err = client.Call("LeaseCallbacks.RevokeLease", args, &reply)
-			if err != nil {
-				return err
+			select {
+			case <-time.After(duration):
+			case <-done:
 			}
-			if reply.Status != storagerpc.OK {
-				return errors.New("RevokeLease returns not OK status")
-			}
+			// acquire lock again
+			ss.storeRWL.Lock()
 		}
-		leaseList.Remove(e)
 	}
 	delete(ss.leases, key)
-
-	return nil
+	return
 }
 
 func (ss *storageServer) joinCluster(masterServerHostPort string) error {

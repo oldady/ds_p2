@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/rpc"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -188,12 +187,6 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 	ss.storeRWL.Lock()
 	defer ss.storeRWL.Unlock()
 
-	_, exisit := ss.store[args.Key]
-	if exisit && isUserKey(args.Key) {
-		reply.Status = storagerpc.ItemExists
-		return nil
-	}
-
 	ss.revokeLease(args.Key)
 	ss.store[args.Key] = args.Value
 	reply.Status = storagerpc.OK
@@ -287,40 +280,12 @@ func (ss *storageServer) assertKeyAndServer(key string) (storagerpc.Status, bool
 // Return true if the key is in this server's range,
 // else, return false
 func (ss *storageServer) inRange(key string) bool {
-	// get username part
-	index := strings.Index(key, ":")
-	if index < 0 {
-		panic("")
-	}
-	hash := libstore.StoreHash(key[0:index])
-
-	var successor uint32
-	distance := ^uint32(0)
-
-	for id := range ss.servers {
-		tmpDistance := uint32(id - hash) // [*]auto overflow
-		if tmpDistance < distance {
-			distance = tmpDistance
-			successor = id
-		}
-	}
+	successor := libstore.FindStorageServerId(key, ss.servers)
 	if successor != ss.nodeID {
 		return false
 	}
 
 	return true
-}
-
-func isUserKey(key string) bool {
-	index := strings.Index(key, ":")
-	if index < 0 {
-		panic("")
-	}
-
-	if index+4 > len(key) {
-		return false
-	}
-	return key[index:index+4] == "user"
 }
 
 // Get a key-value pair
@@ -429,7 +394,7 @@ func (ss *storageServer) joinCluster(masterServerHostPort string) error {
 
 		args := &storagerpc.RegisterArgs{
 			ServerInfo: storagerpc.Node{
-				HostPort: net.JoinHostPort("localhost", strconv.Itoa(ss.port)),
+				HostPort: net.JoinHostPort("localhost", strconv.Itoa(ss.port)), // TODO: change localhost to real host name
 				NodeID:   ss.nodeID,
 			},
 		}

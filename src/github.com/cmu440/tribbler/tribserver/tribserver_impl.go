@@ -2,9 +2,15 @@ package tribserver
 
 import (
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/rpc"
 
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 )
+
+var _ = fmt.Printf
 
 type tribServer struct {
 	// TODO: implement this!
@@ -16,8 +22,22 @@ type tribServer struct {
 // could not be started.
 //
 // For hints on how to properly setup RPC, see the rpc/tribrpc package.
-func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
-	return nil, errors.New("not implemented")
+func NewTribServer(masterServerHostPort, myHostPort string) (ts TribServer, err error) {
+	ts = &tribServer{}
+
+	err = rpc.RegisterName("TribServer", tribrpc.Wrap(ts))
+	if err != nil {
+		return nil, err
+	}
+
+	rpc.HandleHTTP()
+	l, err := net.Listen("tcp", myHostPort)
+	if err != nil {
+		return nil, err
+	}
+	go http.Serve(l, nil)
+
+	return ts, nil
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {

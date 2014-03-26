@@ -1,3 +1,7 @@
+// A user is represented as "{userId}"
+// User tribbles is list<Hash(timestamp, contents)> "{userId}:tbs"
+// Tribble is "{userId}:{Hash(timestamp, contents)}"
+// Subscription is <list> "{userId}:sbsp"
 package tribserver
 
 import (
@@ -7,6 +11,7 @@ import (
 	"net/http"
 	"net/rpc"
 
+	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 )
 
@@ -14,6 +19,7 @@ var _ = fmt.Printf
 
 type tribServer struct {
 	// TODO: implement this!
+	libstore.Libstore
 }
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
@@ -22,8 +28,15 @@ type tribServer struct {
 // could not be started.
 //
 // For hints on how to properly setup RPC, see the rpc/tribrpc package.
-func NewTribServer(masterServerHostPort, myHostPort string) (ts TribServer, err error) {
-	ts = &tribServer{}
+func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
+	newStore, err := libstore.NewLibstore(masterServerHostPort, myHostPort, libstore.Never)
+	if err != nil {
+		return nil, err
+	}
+
+	ts := &tribServer{
+		Libstore: newStore,
+	}
 
 	err = rpc.RegisterName("TribServer", tribrpc.Wrap(ts))
 	if err != nil {
@@ -41,7 +54,24 @@ func NewTribServer(masterServerHostPort, myHostPort string) (ts TribServer, err 
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
-	return errors.New("not implemented")
+	_, err := ts.Libstore.Get(args.UserID)
+	if err == nil {
+		reply.Status = tribrpc.Exists
+		return nil
+	}
+	switch err {
+	//case KeyNotFoundError:
+	default:
+		return err
+	}
+
+	err = ts.Libstore.Put(args.UserID, "")
+	if err != nil {
+		return err
+	}
+
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {

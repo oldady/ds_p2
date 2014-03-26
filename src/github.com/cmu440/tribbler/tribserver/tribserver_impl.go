@@ -28,6 +28,11 @@ const (
 	tribbleValueFormat = "%d\t%s" // (time.Now().UnixNano(), contents)
 )
 
+const (
+	doSubAppend uint8 = iota + 1
+	doSubRemove
+)
+
 type tribServer struct {
 	libstore.Libstore
 }
@@ -84,10 +89,7 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 	return nil
 }
 
-func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	user := args.UserID
-	target := args.TargetUserID
-
+func (ts *tribServer) doSub(user, target string, reply *tribrpc.SubscriptionReply, mode uint8) error {
 	_, err := ts.Libstore.Get(user)
 	switch err {
 	case nil: // expected case, do nothing
@@ -109,7 +111,12 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	}
 
 	subscListKey := makeSubscListKey(user)
-	err = ts.Libstore.AppendToList(subscListKey, target)
+	switch mode {
+	case doSubAppend:
+		err = ts.Libstore.AppendToList(subscListKey, target)
+	case doSubRemove:
+		err = ts.Libstore.RemoveFromList(subscListKey, target)
+	}
 	if err != nil {
 		return err
 	}
@@ -118,12 +125,44 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	return nil
 }
 
+func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
+	return ts.doSub(
+		args.UserID,
+		args.TargetUserID,
+		reply,
+		doSubAppend,
+	)
+}
+
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	return errors.New("not implemented")
+	return ts.doSub(
+		args.UserID,
+		args.TargetUserID,
+		reply,
+		doSubRemove,
+	)
 }
 
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
-	return errors.New("not implemented")
+	user := args.UserID
+	_, err := ts.Libstore.Get(user)
+	switch err {
+	case nil: // expected case, do nothing
+	case libstore.ErrorKeyNotFound:
+		reply.Status = tribrpc.NoSuchUser
+		return nil
+	default:
+		return err
+	}
+
+	subscListKey := makeSubscListKey(user)
+	userIDs, err := ts.Libstore.GetList(subscListKey)
+	if err != nil {
+		return err
+	}
+	reply.UserIDs = userIDs
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
@@ -151,7 +190,7 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	}
 
 	// then insert mapping from unique Id in each user to tribble value
-        tribId := makeTribId(user, tribHash)
+	tribId := makeTribId(user, tribHash)
 
 	err = ts.Libstore.Put(tribId, tribValue)
 	if err != nil {

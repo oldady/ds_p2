@@ -216,12 +216,16 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 
 	tribListKey := makeTribListKey(user)
 
-	tribHashIds, err := ts.Libstore.GetList(tribListKey)
+	hashIds, err := ts.Libstore.GetList(tribListKey)
+	for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+		hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+	}
+
 	if err != nil {
 		return err
 	}
 
-	tribValues, err := ts.getTribValuesFromHashIds(user, tribHashIds)
+	tribValues, err := ts.getTribValuesFromHashIds(user, hashIds)
 	if err != nil {
 		return err
 	}
@@ -231,10 +235,10 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	return nil
 }
 
-func (ts *tribServer) getTribValuesFromHashIds(user string, tribHashIds []string) ([]string, error) {
+func (ts *tribServer) getTribValuesFromHashIds(user string, hashIds []string) ([]string, error) {
 	var err error
-	tribValues := make([]string, len(tribHashIds))
-	for i, hashId := range tribHashIds {
+	tribValues := make([]string, len(hashIds))
+	for i, hashId := range hashIds {
 		tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
 		if err != nil {
 			return nil, err
@@ -249,11 +253,15 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribNum := 0
 
 	for i, target := range subscList {
-		tribHashIds, err := ts.Libstore.GetList(makeTribListKey(target))
+		hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
+
+		for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+			hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+		}
 		if err != nil {
 			return nil, err
 		}
-		tribValues, err := ts.getTribValuesFromHashIds(target, tribHashIds)
+		tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
 		if err != nil {
 			return nil, err
 		}
@@ -380,9 +388,6 @@ func makeTribbles(user string, tribValues []string) []tribrpc.Tribble {
 	tribbles := make([]tribrpc.Tribble, resLength)
 
 	for i, tribValue := range tribValues {
-		if i >= maxGetTribbleNum {
-			break
-		}
 		tribbles[i] = makeTribble(user, tribValue)
 	}
 	return tribbles

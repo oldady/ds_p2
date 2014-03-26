@@ -70,9 +70,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		return nil, ErrorKeyNotFound
 	}
 	res := make([]string, len(l))
-	for i, v := range l {
-		res[len(l)-i-1] = v
-	}
+	copy(res, l)
 	return res, nil
 }
 

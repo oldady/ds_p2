@@ -1,7 +1,7 @@
 // A user is represented as "{userId}"
 // User tribbles is list<Hash(timestamp, contents)> "{userId}:tbs"
-// Tribble is "{userId}:{Hash(timestamp, contents)}"
-// - "%d\t%s" (time.Now().Unix(), contents)
+// TribbleID is "{userId}:{Hash(timestamp, contents)}"
+// TribbleValue format see below in const
 // Subscription is <list> "{userId}:sbsp"
 package tribserver
 
@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cmu440/tribbler/libstore"
@@ -20,13 +22,13 @@ import (
 var _ = fmt.Printf
 
 const (
-	tribbleListSuffix      = "tbs"
-	subscriptionListSuffix = "sbsp"
-	tribbleFormat          = "%d\t%s" // (time.Now().Unix(), contents)
+	maxGetTribbleNum   = 100
+	tribListKeySuffix  = "tbs"
+	subscListKeySuffix = "sbsp"
+	tribbleValueFormat = "%d\t%s" // (time.Now().UnixNano(), contents)
 )
 
 type tribServer struct {
-	// TODO: implement this!
 	libstore.Libstore
 }
 
@@ -106,8 +108,8 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 		return err
 	}
 
-	subscriptionList := fmt.Sprintf("%s:%s", user, subscriptionListSuffix)
-	err = ts.Libstore.AppendToList(subscriptionList, target)
+	subscListKey := makeSubscListKey(user)
+	err = ts.Libstore.AppendToList(subscListKey, target)
 	if err != nil {
 		return err
 	}
@@ -124,10 +126,6 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 	return errors.New("not implemented")
 }
 
-func makeTribble(contents string) string {
-	return fmt.Sprintf(tribbleFormat, time.Now().Unix(), contents)
-}
-
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
 	user := args.UserID
 
@@ -141,21 +139,21 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 		return err
 	}
 
-	tribbleValue := makeTribble(args.Contents)
+	tribValue := makeTribValue(args.Contents)
 
-	tribbleHash := fmt.Sprintf("%d", libstore.StoreHash(tribbleValue))
-	tribbleList := fmt.Sprint("%s:%s", user, tribbleListSuffix)
+	tribHash := makeTribHash(tribValue)
+	tribListKey := makeTribListKey(user)
 
 	// insert hash value as tribble ID to user tribbles list
-	err = ts.Libstore.AppendToList(tribbleList, tribbleHash)
+	err = ts.Libstore.AppendToList(tribListKey, tribHash)
 	if err != nil {
 		return err
 	}
 
 	// then insert mapping from unique Id in each user to tribble value
-	tribbleId := fmt.Sprintf("%s:%s", user, tribbleHash)
+        tribId := makeTribId(user, tribHash)
 
-	err = ts.Libstore.Put(tribbleId, tribbleValue)
+	err = ts.Libstore.Put(tribId, tribValue)
 	if err != nil {
 		return err
 	}
@@ -165,9 +163,86 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 }
 
 func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
-	return errors.New("not implemented")
+	user := args.UserID
+
+	_, err := ts.Libstore.Get(user)
+	switch err {
+	case nil: // expected case, do nothing
+	case libstore.ErrorKeyNotFound:
+		reply.Status = tribrpc.NoSuchUser
+		return nil
+	default:
+		return err
+	}
+
+	tribListKey := makeTribListKey(user)
+
+	tribHashIdList, err := ts.Libstore.GetList(tribListKey)
+	if err != nil {
+		return err
+	}
+
+	tribValues := make([]string, len(tribHashIdList))
+	for i, hashId := range tribHashIdList {
+		tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
+		if err != nil {
+			return err
+		}
+	}
+
+	reply.Tribbles = makeTribbles(user, tribValues)
+	reply.Status = tribrpc.OK
+	return nil
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
 	return errors.New("not implemented")
+}
+
+func makeSubscListKey(user string) string {
+	return fmt.Sprintf("%s:%s", user, subscListKeySuffix)
+}
+
+func makeTribId(user, hashId string) string {
+	return fmt.Sprintf("%s:%s", user, hashId)
+}
+
+func makeTribValue(contents string) string {
+	return fmt.Sprintf(tribbleValueFormat, time.Now().UnixNano(), contents)
+}
+
+func makeTribHash(tribValue string) string {
+	return fmt.Sprintf("%d", libstore.StoreHash(tribValue))
+}
+
+func makeTribListKey(user string) string {
+	return fmt.Sprintf("%s:%s", user, tribListKeySuffix)
+}
+
+func makeTribbles(user string, tribValues []string) []tribrpc.Tribble {
+	resLength := len(tribValues)
+	if resLength > maxGetTribbleNum {
+		resLength = maxGetTribbleNum
+	}
+	tribbles := make([]tribrpc.Tribble, resLength)
+
+	for i, tribValue := range tribValues {
+		if i >= maxGetTribbleNum {
+			break
+		}
+		fields := strings.SplitN(tribValue, "\t", 2)
+		if len(fields) != 2 {
+			panic("")
+		}
+		nsec, err := strconv.Atoi(fields[0])
+		if err != nil {
+			panic("")
+		}
+		tribbles[i] = tribrpc.Tribble{
+			UserID:   user,
+			Posted:   time.Unix(0, int64(nsec)),
+			Contents: fields[1],
+		}
+	}
+	return tribbles
 }

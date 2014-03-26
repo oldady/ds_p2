@@ -2,9 +2,12 @@ package libstore
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
+
+var _ = fmt.Printf
 
 var (
 	ErrorKeyNotFound = errors.New("Key Not Found in Storage System")
@@ -57,6 +60,7 @@ func (ls *libstore) Get(key string) (string, error) {
 
 func (ls *libstore) Put(key, value string) error {
 	ls.kvStore[key] = value
+	fmt.Println("insert key:", key, "value: ", value)
 	return nil
 }
 
@@ -65,7 +69,11 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	if !ok {
 		return nil, ErrorKeyNotFound
 	}
-	return l, nil
+	res := make([]string, len(l))
+	for i, v := range l {
+		res[len(l)-i-1] = v
+	}
+	return res, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
@@ -75,7 +83,7 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	}
 	for i, item := range l {
 		if item == removeItem {
-			l = append(l[:i], l[i+1:]...)
+			ls.klStore[key] = append(l[:i], l[i+1:]...)
 			break
 		}
 	}
@@ -88,7 +96,8 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 		l = make([]string, 0)
 		ls.klStore[key] = l
 	}
-	l = append(l, newItem)
+	ls.klStore[key] = append(l, newItem)
+	fmt.Printf("append key: %v, insert value: %v, List now: %v\n", key, newItem, ls.klStore[key])
 	return nil
 }
 

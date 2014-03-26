@@ -46,13 +46,36 @@ type cachedItem struct {
 	expirationTime time.Time
 }
 
+type accessRecord struct {
+	cnt int
+	ts  *time.Time
+}
+
+type accessInfo struct {
+	log         [storagerpc.QueryCacheSeconds]*accessRecord
+	lastTouched int
+	mutex       sync.Mutex
+}
+
+func newAccessInfo() *accessInfo {
+	ai := new(accessInfo)
+	for i := range ai.log {
+		ai.log[i] = new(accessRecord)
+	}
+
+	return ai
+}
+
 type libstore struct {
 	myHostPort        string
 	mode              LeaseMode
-	storageServers    map[uint32]storagerpc.Node
-	cache             map[string]cachedItem
+	storageServers    map[uint32]*storagerpc.Node
+	cache             map[string]*cachedItem
 	cacheRWL          sync.RWMutex
 	storageRPCHandler map[uint32]*rpc.Client
+
+	// access info
+	accessInfos map[string]*accessInfo
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -83,9 +106,10 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	ls := &libstore{
 		myHostPort:        myHostPort,
 		mode:              mode,
-		storageServers:    make(map[uint32]storagerpc.Node),
-		cache:             make(map[string]cachedItem),
+		storageServers:    make(map[uint32]*storagerpc.Node),
+		cache:             make(map[string]*cachedItem),
 		storageRPCHandler: make(map[uint32]*rpc.Client),
+		accessInfos:       make(map[string]*accessInfo),
 	}
 
 	// connect to the master server and get the server list
@@ -115,7 +139,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 
 	// adding the server list
 	for _, s := range reply.Servers {
-		ls.storageServers[s.NodeID] = s
+		ls.storageServers[s.NodeID] = &s
 		ls.storageRPCHandler[s.NodeID], err = rpc.DialHTTP("tcp", s.HostPort)
 		if err != nil {
 			return nil, err
@@ -140,7 +164,7 @@ func (ls *libstore) Get(key string) (string, error) {
 		Key: key,
 	}
 
-	if ls.needLease(key) {
+	if !ls.inCache(key) && ls.needLease(key) {
 		args.WantLease = true
 		args.HostPort = ls.myHostPort
 	}
@@ -159,7 +183,7 @@ func (ls *libstore) Get(key string) (string, error) {
 	if reply.Lease.Granted {
 		ls.cacheRWL.Lock()
 
-		ls.cache[key] = cachedItem{
+		ls.cache[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
@@ -186,7 +210,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		Key: key,
 	}
 
-	if ls.needLease(key) {
+	if !ls.inCache(key) && ls.needLease(key) {
 		args.WantLease = true
 		args.HostPort = ls.myHostPort
 	}
@@ -207,7 +231,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	if reply.Lease.Granted {
 		ls.cacheRWL.Lock()
 
-		ls.cache[key] = cachedItem{
+		ls.cache[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
@@ -236,7 +260,7 @@ func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storage
 	return nil
 }
 
-func FindStorageServerId(key string, servers map[uint32]storagerpc.Node) uint32 {
+func FindStorageServerId(key string, servers map[uint32]*storagerpc.Node) uint32 {
 	// get username part
 	index := strings.Index(key, ":")
 	if index < 0 {
@@ -295,6 +319,15 @@ func (ls *libstore) getFromCache(key string) interface{} {
 	return nil
 }
 
+func (ls *libstore) inCache(key string) bool {
+	ls.cacheRWL.RLock()
+	defer ls.cacheRWL.RUnlock()
+
+	_, exist := ls.cache[key]
+
+	return exist
+}
+
 func (ls *libstore) needLease(key string) bool {
 	if ls.mode == Never {
 		return false
@@ -304,6 +337,38 @@ func (ls *libstore) needLease(key string) bool {
 		return true
 	}
 
-	// TODO
+	if _, exist := ls.accessInfos[key]; !exist {
+		ls.accessInfos[key] = newAccessInfo()
+	}
+
+	info := ls.accessInfos[key]
+	info.mutex.Lock()
+	defer info.mutex.Unlock()
+
+	// inc the query count
+	now := time.Now()
+	queueLen := len(info.log)
+
+	lastTouched := int(now.Unix() % int64(len(info.log)))
+	info.log[lastTouched].cnt++
+	info.log[lastTouched].ts = &now
+	info.lastTouched = lastTouched
+
+	// sum the query counts
+	totalCount := 0
+	for i := range info.log {
+		record := info.log[(lastTouched-i+queueLen)%queueLen]
+
+		// ignore empty or stale counts
+		if record.ts == nil ||
+			(now.Unix()-record.ts.Unix() >= storagerpc.QueryCacheSeconds) {
+			break
+		}
+		totalCount = totalCount + record.cnt
+	}
+
+	if totalCount >= storagerpc.QueryCacheThresh {
+		return true
+	}
 	return false
 }

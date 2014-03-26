@@ -22,7 +22,7 @@ type storageServer struct {
 	port      int
 	nodeID    uint32
 	isMaster  bool
-	servers   map[uint32]storagerpc.Node
+	servers   map[uint32]*storagerpc.Node
 	isReady   bool
 	infoRWL   sync.RWMutex
 	readyChan chan struct{}
@@ -52,7 +52,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		port:       port,
 		nodeID:     nodeID,
 		readyChan:  make(chan struct{}),
-		servers:    make(map[uint32]storagerpc.Node),
+		servers:    make(map[uint32]*storagerpc.Node),
 		store:      make(map[string]interface{}),
 		leases:     make(map[string]*list.List),
 		inRevoking: make(map[string]bool),
@@ -61,7 +61,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	if masterServerHostPort == "" {
 		ss.isMaster = true
 	}
-	ss.servers[nodeID] = storagerpc.Node{
+	ss.servers[nodeID] = &storagerpc.Node{
 		HostPort: net.JoinHostPort("localhost", strconv.Itoa(port)),
 		NodeID:   ss.nodeID,
 	}
@@ -111,7 +111,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 
 		// add to cluster
 		if _, exisit := ss.servers[args.ServerInfo.NodeID]; !exisit {
-			ss.servers[args.ServerInfo.NodeID] = args.ServerInfo
+			ss.servers[args.ServerInfo.NodeID] = &args.ServerInfo
 		}
 		if len(ss.servers) == ss.numNodes {
 			ss.isReady = true
@@ -121,7 +121,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 	}
 
 	for k := range ss.servers {
-		reply.Servers = append(reply.Servers, ss.servers[k])
+		reply.Servers = append(reply.Servers, *ss.servers[k])
 	}
 
 	return nil
@@ -141,7 +141,7 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 	}
 	reply.Status = storagerpc.OK
 	for k := range ss.servers {
-		reply.Servers = append(reply.Servers, ss.servers[k])
+		reply.Servers = append(reply.Servers, *ss.servers[k])
 	}
 
 	return nil
@@ -408,7 +408,7 @@ func (ss *storageServer) joinCluster(masterServerHostPort string) error {
 		if reply.Status == storagerpc.OK {
 			ss.infoRWL.Lock()
 			for _, node := range reply.Servers {
-				ss.servers[node.NodeID] = node
+				ss.servers[node.NodeID] = &node
 			}
 			ss.isReady = true
 			ss.infoRWL.Unlock()

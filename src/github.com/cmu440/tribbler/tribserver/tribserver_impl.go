@@ -388,6 +388,9 @@ func makeTribbles(user string, tribValues []string) []tribrpc.Tribble {
 	tribbles := make([]tribrpc.Tribble, resLength)
 
 	for i, tribValue := range tribValues {
+		if i >= resLength {
+			break
+		}
 		tribbles[i] = makeTribble(user, tribValue)
 	}
 	return tribbles

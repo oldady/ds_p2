@@ -1,6 +1,7 @@
 // A user is represented as "{userId}"
 // User tribbles is list<Hash(timestamp, contents)> "{userId}:tbs"
 // Tribble is "{userId}:{Hash(timestamp, contents)}"
+// - "%s\t%s" (time.Now().Unix(), contents)
 // Subscription is <list> "{userId}:sbsp"
 package tribserver
 
@@ -60,7 +61,7 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 		return nil
 	}
 	switch err {
-	//case KeyNotFoundError:
+	case libstore.ErrorKeyNotFound: // expected error
 	default:
 		return err
 	}
@@ -75,7 +76,36 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	return errors.New("not implemented")
+	user := args.UserID
+	target := args.TargetUserID
+
+	_, err := ts.Libstore.Get(user)
+	switch err {
+	case nil: // expected case
+	case libstore.ErrorKeyNotFound:
+		reply.Status = tribrpc.NoSuchUser
+		return nil
+	default:
+		return err
+	}
+
+	_, err = ts.Libstore.Get(target)
+	switch err {
+	case nil: // expected case
+	case libstore.ErrorKeyNotFound:
+		reply.Status = tribrpc.NoSuchTargetUser
+		return nil
+	default:
+		return err
+	}
+
+	subscriptionList := fmt.Sprintf("%s:sbsp", user)
+	err = ts.Libstore.AppendToList(subscriptionList, target)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {

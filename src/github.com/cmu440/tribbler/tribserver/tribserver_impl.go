@@ -6,7 +6,7 @@
 package tribserver
 
 import (
-	"errors"
+	"container/heap"
 	"fmt"
 	"net"
 	"net/http"
@@ -216,17 +216,14 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 
 	tribListKey := makeTribListKey(user)
 
-	tribHashIdList, err := ts.Libstore.GetList(tribListKey)
+	tribHashIds, err := ts.Libstore.GetList(tribListKey)
 	if err != nil {
 		return err
 	}
 
-	tribValues := make([]string, len(tribHashIdList))
-	for i, hashId := range tribHashIdList {
-		tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
-		if err != nil {
-			return err
-		}
+	tribValues, err := ts.getTribValuesFromHashIds(user, tribHashIds)
+	if err != nil {
+		return err
 	}
 
 	reply.Tribbles = makeTribbles(user, tribValues)
@@ -234,8 +231,109 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	return nil
 }
 
+func (ts *tribServer) getTribValuesFromHashIds(user string, tribHashIds []string) ([]string, error) {
+	var err error
+	tribValues := make([]string, len(tribHashIds))
+	for i, hashId := range tribHashIds {
+		tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return tribValues, nil
+}
+
+func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, error) {
+	// get tribbles from all subscribe
+	allTribValues := make([][]string, len(subscList))
+	allTribNum := 0
+
+	for i, target := range subscList {
+		tribHashIds, err := ts.Libstore.GetList(makeTribListKey(target))
+		if err != nil {
+			return nil, err
+		}
+		tribValues, err := ts.getTribValuesFromHashIds(target, tribHashIds)
+		if err != nil {
+			return nil, err
+		}
+		allTribNum += len(tribValues)
+		allTribValues[i] = tribValues
+	}
+
+	// get the most recent at most 100 tribbles.
+	// use priority queue
+
+	count := 0
+
+	h := new(maxHeap)
+	pos := make([]int, len(subscList))
+
+	resLength := allTribNum
+	if resLength > maxGetTribbleNum {
+		resLength = maxGetTribbleNum
+	}
+	tribbles := make([]tribrpc.Tribble, resLength)
+
+	for i, tribValues := range allTribValues {
+		if pos[i] >= len(tribValues) {
+			continue
+		}
+		item, err := makeHeapItem(tribValues[pos[i]], i)
+		if err != nil {
+			panic("")
+		}
+		heap.Push(h, item)
+		pos[i]++
+	}
+
+	for count < len(tribbles) {
+		item := (heap.Pop(h)).(*heapItem)
+		tribbles[count] = makeTribble(subscList[item.index], item.value)
+		count++
+
+		i := item.index
+		tribValues := allTribValues[i]
+		if pos[i] < len(allTribValues[i]) {
+			item, err := makeHeapItem(tribValues[pos[i]], i)
+			if err != nil {
+				panic("")
+			}
+			heap.Push(h, item)
+			pos[i]++
+		}
+	}
+
+	return tribbles, nil
+}
+
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
-	return errors.New("not implemented")
+	user := args.UserID
+
+	_, err := ts.Libstore.Get(user)
+	switch err {
+	case nil: // expected case, do nothing
+	case libstore.ErrorKeyNotFound:
+		reply.Status = tribrpc.NoSuchUser
+		return nil
+	default:
+		return err
+	}
+
+	subscListKey := makeSubscListKey(user)
+	subscList, err := ts.Libstore.GetList(subscListKey)
+	if err != nil {
+		return err
+	}
+
+	tribbles, err := ts.getTribsFromSubs(subscList)
+	if err != nil {
+		return err
+	}
+
+	reply.Status = tribrpc.OK
+	reply.Tribbles = tribbles
+	return nil
 }
 
 func makeSubscListKey(user string) string {
@@ -258,6 +356,22 @@ func makeTribListKey(user string) string {
 	return fmt.Sprintf("%s:%s", user, tribListKeySuffix)
 }
 
+func makeTribble(user, tribValue string) tribrpc.Tribble {
+	fields := strings.SplitN(tribValue, "\t", 2)
+	if len(fields) != 2 {
+		panic("")
+	}
+	nsec, err := strconv.Atoi(fields[0])
+	if err != nil {
+		panic("")
+	}
+	return tribrpc.Tribble{
+		UserID:   user,
+		Posted:   time.Unix(0, int64(nsec)),
+		Contents: fields[1],
+	}
+}
+
 func makeTribbles(user string, tribValues []string) []tribrpc.Tribble {
 	resLength := len(tribValues)
 	if resLength > maxGetTribbleNum {
@@ -269,19 +383,56 @@ func makeTribbles(user string, tribValues []string) []tribrpc.Tribble {
 		if i >= maxGetTribbleNum {
 			break
 		}
-		fields := strings.SplitN(tribValue, "\t", 2)
-		if len(fields) != 2 {
-			panic("")
-		}
-		nsec, err := strconv.Atoi(fields[0])
-		if err != nil {
-			panic("")
-		}
-		tribbles[i] = tribrpc.Tribble{
-			UserID:   user,
-			Posted:   time.Unix(0, int64(nsec)),
-			Contents: fields[1],
-		}
+		tribbles[i] = makeTribble(user, tribValue)
 	}
 	return tribbles
+}
+
+func makeHeapItem(tribValue string, index int) (*heapItem, error) {
+	var err error
+
+	hi := &heapItem{
+		index: index,
+		value: tribValue,
+	}
+
+	fields := strings.Split(tribValue, "\t")
+	hi.priority, err = strconv.Atoi(fields[0])
+	if err != nil {
+		return nil, err
+	}
+
+	return hi, nil
+}
+
+// ************************
+// **   PRIORITY QUEUE   **
+// ************************
+
+type heapItem struct {
+	priority int
+	index    int
+	value    string
+}
+
+type maxHeap []*heapItem
+
+func (h maxHeap) Len() int { return len(h) }
+func (h maxHeap) Less(i, j int) bool {
+	return h[i].priority > h[j].priority
+}
+func (h maxHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *maxHeap) Push(x interface{}) {
+	*h = append(*h, x.(*heapItem))
+}
+
+func (h *maxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
 }

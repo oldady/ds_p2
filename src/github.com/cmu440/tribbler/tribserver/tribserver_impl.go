@@ -302,7 +302,7 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 
 		i := item.index
 		tribValues := allTribValues[i]
-		if pos[i] < len(allTribValues[i]) {
+		if pos[i] < len(tribValues) {
 			item, err := makeHeapItem(tribValues[pos[i]], i)
 			if err != nil {
 				panic("")

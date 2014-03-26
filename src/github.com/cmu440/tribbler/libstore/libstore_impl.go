@@ -6,8 +6,13 @@ import (
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+var (
+	ErrorKeyNotFound = errors.New("Key Not Found in Storage System")
+)
+
 type libstore struct {
-	// TODO: implement this!
+	kvStore map[string]string
+	klStore map[string]([]string)
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -35,27 +40,56 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	return nil, errors.New("not implemented")
+	ls := &libstore{
+		kvStore: make(map[string]string),
+		klStore: make(map[string]([]string)),
+	}
+	return ls, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	return "", errors.New("not implemented")
+	v, ok := ls.kvStore[key]
+	if !ok {
+		return "", ErrorKeyNotFound
+	}
+	return v, nil
 }
 
 func (ls *libstore) Put(key, value string) error {
-	return errors.New("not implemented")
+	ls.kvStore[key] = value
+	return nil
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	return nil, errors.New("not implemented")
+	l, ok := ls.klStore[key]
+	if !ok {
+		return nil, ErrorKeyNotFound
+	}
+	return l, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	return errors.New("not implemented")
+	l, ok := ls.klStore[key]
+	if !ok {
+		return nil
+	}
+	for i, item := range l {
+		if item == removeItem {
+			l = append(l[:i], l[i+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	return errors.New("not implemented")
+	l, ok := ls.klStore[key]
+	if !ok {
+		l = make([]string, 0)
+		ls.klStore[key] = l
+	}
+	l = append(l, newItem)
+	return nil
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {

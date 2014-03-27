@@ -30,7 +30,8 @@ type storageServer struct {
 	store      map[string]interface{}
 	leases     map[string]*list.List
 	inRevoking map[string]bool
-	sync.RWMutex
+	rwl        *sync.RWMutex
+	cond       *sync.Cond
 }
 
 type leaseRecord struct {
@@ -56,7 +57,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		store:      make(map[string]interface{}),
 		leases:     make(map[string]*list.List),
 		inRevoking: make(map[string]bool),
+		rwl:        new(sync.RWMutex),
 	}
+	ss.cond = sync.NewCond(ss.rwl)
 
 	if masterServerHostPort == "" {
 		ss.isMaster = true
@@ -184,8 +187,10 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 		return nil
 	}
 
-	ss.Lock()
-	defer ss.Unlock()
+	ss.rwl.Lock()
+	defer ss.rwl.Unlock()
+
+	ss.waitForRevoking(args.Key)
 
 	ss.revokeLease(args.Key)
 	ss.store[args.Key] = args.Value
@@ -201,8 +206,10 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		return nil
 	}
 
-	ss.Lock()
-	defer ss.Unlock()
+	ss.rwl.Lock()
+	defer ss.rwl.Unlock()
+
+	ss.waitForRevoking(args.Key)
 
 	_, exisit := ss.store[args.Key]
 	if !exisit {
@@ -236,8 +243,10 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 		return nil
 	}
 
-	ss.Lock()
-	defer ss.Unlock()
+	ss.rwl.Lock()
+	defer ss.rwl.Unlock()
+
+	ss.waitForRevoking(args.Key)
 
 	if _, exisit := ss.store[args.Key]; !exisit {
 		reply.Status = storagerpc.KeyNotFound
@@ -295,11 +304,11 @@ func (ss *storageServer) generalGet(args *storagerpc.GetArgs) (*storagerpc.GetRe
 		return &storagerpc.GetReply{Status: status}, nil
 	}
 
-	ss.RLock()
+	ss.rwl.RLock()
 
 	value, exisit := ss.store[args.Key]
 	if !exisit {
-		ss.RUnlock()
+		ss.rwl.RUnlock()
 		return &storagerpc.GetReply{Status: storagerpc.KeyNotFound}, nil
 	}
 
@@ -309,13 +318,13 @@ func (ss *storageServer) generalGet(args *storagerpc.GetArgs) (*storagerpc.GetRe
 
 	if args.WantLease {
 		// upgrade to write lock
-		ss.RUnlock()
-		ss.Lock()
+		ss.rwl.RUnlock()
+		ss.rwl.Lock()
 
 		// refuse the lease request
 		if ss.inRevoking[args.Key] {
 			reply.Lease = storagerpc.Lease{Granted: false}
-			ss.Unlock()
+			ss.rwl.Unlock()
 			return reply, value
 		}
 
@@ -336,11 +345,11 @@ func (ss *storageServer) generalGet(args *storagerpc.GetArgs) (*storagerpc.GetRe
 			ValidSeconds: storagerpc.LeaseSeconds,
 		}
 
-		ss.Unlock()
+		ss.rwl.Unlock()
 		return reply, value
 	}
 
-	ss.RUnlock()
+	ss.rwl.RUnlock()
 	return reply, value
 }
 
@@ -353,9 +362,6 @@ func (ss *storageServer) revokeLease(key string) {
 	}
 
 	ss.inRevoking[key] = true
-	defer func() {
-		delete(ss.inRevoking, key)
-	}()
 	done := make(chan *rpc.Call, 1)
 
 	for e := leaseList.Front(); e != nil; e = e.Next() {
@@ -366,7 +372,7 @@ func (ss *storageServer) revokeLease(key string) {
 			duration := lr.expirationTime.Sub(time.Now())
 
 			// release the lock to prevent blocking
-			ss.Unlock()
+			ss.rwl.Unlock()
 			client, err := rpc.DialHTTP("tcp", lr.hostport)
 			if err == nil {
 				args := &storagerpc.RevokeLeaseArgs{Key: key}
@@ -378,10 +384,14 @@ func (ss *storageServer) revokeLease(key string) {
 			case <-done:
 			}
 			// acquire lock again
-			ss.Lock()
+			ss.rwl.Lock()
 		}
 	}
+
+	delete(ss.inRevoking, key)
 	delete(ss.leases, key)
+	ss.cond.Broadcast()
+
 	return
 }
 
@@ -416,5 +426,16 @@ func (ss *storageServer) joinCluster(masterServerHostPort string) error {
 		}
 
 		time.Sleep(1 * time.Second)
+	}
+}
+
+func (ss *storageServer) waitForRevoking(key string) {
+	// wait for any revoking lease
+	for {
+		_, exisit := ss.inRevoking[key]
+		if !exisit {
+			return
+		}
+		ss.cond.Wait()
 	}
 }

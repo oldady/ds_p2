@@ -111,6 +111,41 @@ func (ts *tribServer) doSub(user, target string, reply *tribrpc.SubscriptionRepl
 	}
 
 	subscListKey := makeSubscListKey(user)
+	subscribes, err := ts.Libstore.GetList(subscListKey)
+	switch err {
+	case nil:
+		// we have successfully retrieved the list of subscribes
+		switch mode {
+		case doSubAppend:
+			// check duplicate subscribes
+			for _, subscribe := range subscribes {
+				if subscribe == target {
+					reply.Status = tribrpc.Exists
+					return nil
+				}
+			}
+		case doSubRemove:
+			// check whether exist
+			existTarget := false
+			for _, subscribe := range subscribes {
+				if subscribe == target {
+					existTarget = true
+					break
+				}
+			}
+			if !existTarget {
+				reply.Status = tribrpc.NoSuchTargetUser
+				return nil
+			}
+		default:
+			panic("")
+		}
+	case libstore.ErrorKeyNotFound:
+		// This user hasn't done subscribe before. do thing
+	default:
+		return err
+	}
+
 	switch mode {
 	case doSubAppend:
 		err = ts.Libstore.AppendToList(subscListKey, target)
@@ -217,7 +252,13 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	tribListKey := makeTribListKey(user)
 
 	hashIds, err := ts.Libstore.GetList(tribListKey)
-	if err != nil {
+	switch err {
+	case nil:
+	case libstore.ErrorKeyNotFound:
+		reply.Tribbles = make([]tribrpc.Tribble, 0)
+		reply.Status = tribrpc.OK
+		return nil
+	default:
 		return err
 	}
 
@@ -255,7 +296,12 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 
 	for i, target := range subscList {
 		hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
-		if err != nil {
+		switch err {
+		case nil:
+		case libstore.ErrorKeyNotFound:
+			allTribValues[i] = make([]string, 0)
+			continue
+		default:
 			return nil, err
 		}
 
@@ -333,7 +379,13 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 
 	subscListKey := makeSubscListKey(user)
 	subscList, err := ts.Libstore.GetList(subscListKey)
-	if err != nil {
+	switch err {
+	case nil:
+	case libstore.ErrorKeyNotFound:
+		reply.Tribbles = make([]tribrpc.Tribble, 0)
+		reply.Status = tribrpc.OK
+		return nil
+	default:
 		return err
 	}
 
@@ -342,8 +394,8 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		return err
 	}
 
-	reply.Status = tribrpc.OK
 	reply.Tribbles = tribbles
+	reply.Status = tribrpc.OK
 	return nil
 }
 

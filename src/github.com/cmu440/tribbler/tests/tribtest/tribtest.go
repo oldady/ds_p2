@@ -92,6 +92,7 @@ func checkLimits(rpcCountLimit, byteCountLimit uint32) bool {
 // Check error and status
 func checkErrorStatus(err error, status, expectedStatus tribrpc.Status) bool {
 	if err != nil {
+		LOGE.Println(err)
 		LOGE.Println("FAIL: unexpected error returned")
 		failCount++
 		return true

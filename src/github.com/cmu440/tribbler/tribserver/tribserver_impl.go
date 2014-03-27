@@ -217,12 +217,13 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	tribListKey := makeTribListKey(user)
 
 	hashIds, err := ts.Libstore.GetList(tribListKey)
-	for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-		hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
-	}
-
 	if err != nil {
 		return err
+	}
+
+	// reverse hash Id to achieve most recent tribbles first.
+	for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+		hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
 	}
 
 	tribValues, err := ts.getTribValuesFromHashIds(user, hashIds)
@@ -254,13 +255,15 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 
 	for i, target := range subscList {
 		hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
-
-		for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-			hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
-		}
 		if err != nil {
 			return nil, err
 		}
+
+		// reverse hash Id to achieve most recent tribbles first.
+		for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+			hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+		}
+
 		tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
 		if err != nil {
 			return nil, err

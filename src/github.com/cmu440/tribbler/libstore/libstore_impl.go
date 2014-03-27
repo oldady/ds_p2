@@ -41,11 +41,11 @@ var (
 	}
 )
 
-type cachedItem struct {
-	value          interface{} // value can be a string or a slice
-	expirationTime time.Time
-}
-
+////////////////////////////////
+//                            //
+// access-log related structs //
+//                            //
+////////////////////////////////
 type accessRecord struct {
 	cnt int
 	ts  *time.Time
@@ -65,13 +65,23 @@ func newAccessInfo() *accessInfo {
 	return ai
 }
 
-type accessInfos struct {
+type accessInfoHub struct {
 	a map[string]*accessInfo
 	*sync.Mutex
 }
 
-func newAccessInfos() *accessInfos {
-	return &accessInfos{make(map[string]*accessInfo), new(sync.Mutex)}
+func newAccessInfoHub() *accessInfoHub {
+	return &accessInfoHub{make(map[string]*accessInfo), new(sync.Mutex)}
+}
+
+///////////////////////////
+//                       //
+// cache related structs //
+//                       //
+///////////////////////////
+type cachedItem struct {
+	value          interface{} // value can be a string or a slice
+	expirationTime time.Time
 }
 
 type cache struct {
@@ -91,7 +101,7 @@ type libstore struct {
 	storageRPCHandler map[uint32]*rpc.Client
 
 	// access info
-	accessInfos *accessInfos
+	accessInfoHub *accessInfoHub
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -125,7 +135,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		storageServers:    make(map[uint32]*storagerpc.Node),
 		cache:             newCache(),
 		storageRPCHandler: make(map[uint32]*rpc.Client),
-		accessInfos:       newAccessInfos(),
+		accessInfoHub:     newAccessInfoHub(),
 	}
 
 	// connect to the master server and get the server list
@@ -356,14 +366,14 @@ func (ls *libstore) needLease(key string) bool {
 		return true
 	}
 
-	ls.accessInfos.Lock()
-	defer ls.accessInfos.Unlock()
+	ls.accessInfoHub.Lock()
+	defer ls.accessInfoHub.Unlock()
 
-	if _, exist := ls.accessInfos.a[key]; !exist {
-		ls.accessInfos.a[key] = newAccessInfo()
+	if _, exist := ls.accessInfoHub.a[key]; !exist {
+		ls.accessInfoHub.a[key] = newAccessInfo()
 	}
 
-	info := ls.accessInfos.a[key]
+	info := ls.accessInfoHub.a[key]
 
 	// inc the query count
 	now := time.Now()
@@ -406,12 +416,12 @@ func (ls *libstore) delayedGC(key string) {
 		ls.cache.Unlock()
 
 		// clean access log
-		ls.accessInfos.Lock()
-		for _, v := range ls.accessInfos.a {
+		ls.accessInfoHub.Lock()
+		for _, v := range ls.accessInfoHub.a {
 			if v.log[v.lastTouched].ts.Add(time.Second * time.Duration(storagerpc.QueryCacheSeconds)).Before(time.Now()) { // not accessed recently
-				delete(ls.accessInfos.a, key)
+				delete(ls.accessInfoHub.a, key)
 			}
 		}
-		ls.accessInfos.Unlock()
+		ls.accessInfoHub.Unlock()
 	}
 }

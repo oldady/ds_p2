@@ -41,6 +41,14 @@ var (
 	}
 )
 
+var (
+	ErrorKeyNotFound  = errors.New("Key not found")
+	ErrorItemNotFound = errors.New("Item not found")
+	ErrorWrongServer  = errors.New("Wrong server")
+	ErrorItemExisits  = errors.New("Item exisits")
+	ErrorNotReady     = errors.New("Not ready")
+)
+
 ////////////////////////////////
 //                            //
 // access-log related structs //
@@ -202,8 +210,20 @@ func (ls *libstore) Get(key string) (string, error) {
 		return "", err
 	}
 
-	if reply.Status != storagerpc.OK {
-		return "", errors.New(rpcErrorString[getCall] + strconv.Itoa(int(reply.Status)))
+	switch reply.Status {
+	case storagerpc.OK:
+	case storagerpc.KeyNotFound:
+		return "", ErrorKeyNotFound
+	case storagerpc.ItemNotFound:
+		return "", ErrorItemNotFound
+	case storagerpc.WrongServer:
+		return "", ErrorWrongServer
+	case storagerpc.ItemExists:
+		return "", ErrorItemExisits
+	case storagerpc.NotReady:
+		return "", ErrorNotReady
+	default:
+		panic("")
 	}
 
 	if reply.Lease.Granted {
@@ -249,9 +269,20 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		return nil, err
 	}
 
-	if reply.Status != storagerpc.OK {
-		return nil, errors.New(rpcErrorString[getListCall] + strconv.Itoa(int(reply.Status)))
-
+	switch reply.Status {
+	case storagerpc.OK:
+	case storagerpc.KeyNotFound:
+		return nil, ErrorKeyNotFound
+	case storagerpc.ItemNotFound:
+		return nil, ErrorItemNotFound
+	case storagerpc.WrongServer:
+		return nil, ErrorWrongServer
+	case storagerpc.ItemExists:
+		return nil, ErrorItemExisits
+	case storagerpc.NotReady:
+		return nil, ErrorNotReady
+	default:
+		panic("")
 	}
 
 	// add to cache
@@ -292,7 +323,7 @@ func FindStorageServerId(key string, servers map[uint32]*storagerpc.Node) uint32
 	// get username part
 	index := strings.Index(key, ":")
 	if index < 0 {
-		panic("")
+		index = len(key)
 	}
 	hash := StoreHash(key[0:index])
 
@@ -327,8 +358,20 @@ func (ls *libstore) generalPut(key, value string, callType int) error {
 		return err
 	}
 
-	if reply.Status != storagerpc.OK {
-		return errors.New(rpcErrorString[callType] + strconv.Itoa(int(reply.Status)))
+	switch reply.Status {
+	case storagerpc.OK:
+	case storagerpc.KeyNotFound:
+		return ErrorKeyNotFound
+	case storagerpc.ItemNotFound:
+		return ErrorItemNotFound
+	case storagerpc.WrongServer:
+		return ErrorWrongServer
+	case storagerpc.ItemExists:
+		return ErrorItemExisits
+	case storagerpc.NotReady:
+		return ErrorNotReady
+	default:
+		panic("")
 	}
 	return nil
 }

@@ -192,7 +192,11 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 
 	subscListKey := makeSubscListKey(user)
 	userIDs, err := ts.Libstore.GetList(subscListKey)
-	if err != nil {
+	switch err {
+	case nil:
+	case libstore.ErrorKeyNotFound:
+		userIDs = make([]string, 0)
+	default:
 		return err
 	}
 	reply.UserIDs = userIDs

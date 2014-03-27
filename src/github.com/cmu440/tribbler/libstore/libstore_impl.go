@@ -54,7 +54,6 @@ type accessRecord struct {
 type accessInfo struct {
 	log         [storagerpc.QueryCacheSeconds]*accessRecord
 	lastTouched int
-	mutex       sync.Mutex
 }
 
 func newAccessInfo() *accessInfo {
@@ -66,16 +65,33 @@ func newAccessInfo() *accessInfo {
 	return ai
 }
 
+type accessInfos struct {
+	a map[string]*accessInfo
+	*sync.Mutex
+}
+
+func newAccessInfos() *accessInfos {
+	return &accessInfos{make(map[string]*accessInfo), new(sync.Mutex)}
+}
+
+type cache struct {
+	c map[string]*cachedItem
+	*sync.RWMutex
+}
+
+func newCache() *cache {
+	return &cache{make(map[string]*cachedItem), new(sync.RWMutex)}
+}
+
 type libstore struct {
 	myHostPort        string
 	mode              LeaseMode
 	storageServers    map[uint32]*storagerpc.Node
-	cache             map[string]*cachedItem
-	cacheRWL          sync.RWMutex
+	cache             *cache
 	storageRPCHandler map[uint32]*rpc.Client
 
 	// access info
-	accessInfos map[string]*accessInfo
+	accessInfos *accessInfos
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -107,9 +123,9 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		myHostPort:        myHostPort,
 		mode:              mode,
 		storageServers:    make(map[uint32]*storagerpc.Node),
-		cache:             make(map[string]*cachedItem),
+		cache:             newCache(),
 		storageRPCHandler: make(map[uint32]*rpc.Client),
-		accessInfos:       make(map[string]*accessInfo),
+		accessInfos:       newAccessInfos(),
 	}
 
 	// connect to the master server and get the server list
@@ -122,7 +138,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	var reply storagerpc.GetServersReply
 	ok := false
 	for i := 0; i < maximumTrials; i++ {
-		err = master.Call("StorageServer.GetServer", &args, &reply)
+		err = master.Call("StorageServer.GetServers", &args, &reply)
 		if err != nil {
 			return nil, err
 		}
@@ -181,14 +197,15 @@ func (ls *libstore) Get(key string) (string, error) {
 	}
 
 	if reply.Lease.Granted {
-		ls.cacheRWL.Lock()
+		ls.cache.Lock()
 
-		ls.cache[key] = &cachedItem{
+		ls.cache.c[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
+		go ls.delayedGC(key)
 
-		ls.cacheRWL.Unlock()
+		ls.cache.Unlock()
 	}
 
 	return reply.Value, nil
@@ -229,14 +246,15 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 
 	// add to cache
 	if reply.Lease.Granted {
-		ls.cacheRWL.Lock()
+		ls.cache.Lock()
 
-		ls.cache[key] = &cachedItem{
+		ls.cache.c[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
+		go ls.delayedGC(key)
 
-		ls.cacheRWL.Unlock()
+		ls.cache.Unlock()
 	}
 
 	return reply.Value, nil
@@ -251,10 +269,10 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	ls.cacheRWL.Lock()
-	defer ls.cacheRWL.Unlock()
+	ls.cache.Lock()
+	defer ls.cache.Unlock()
 
-	delete(ls.cache, args.Key)
+	delete(ls.cache.c, args.Key)
 	reply.Status = storagerpc.OK
 
 	return nil
@@ -306,24 +324,25 @@ func (ls *libstore) generalPut(key, value string, callType int) error {
 }
 
 func (ls *libstore) getFromCache(key string) interface{} {
-	ls.cacheRWL.RLock()
-	c, ok := ls.cache[key]
+	ls.cache.Lock()
+	defer ls.cache.Unlock()
+
+	c, ok := ls.cache.c[key]
 	if ok {
 		if c.expirationTime.After(time.Now()) {
 			return c.value
 		}
-		delete(ls.cache, key)
+		delete(ls.cache.c, key)
 	}
-	ls.cacheRWL.RUnlock()
 
 	return nil
 }
 
 func (ls *libstore) inCache(key string) bool {
-	ls.cacheRWL.RLock()
-	defer ls.cacheRWL.RUnlock()
+	ls.cache.RLock()
+	defer ls.cache.RUnlock()
 
-	_, exist := ls.cache[key]
+	_, exist := ls.cache.c[key]
 
 	return exist
 }
@@ -337,13 +356,14 @@ func (ls *libstore) needLease(key string) bool {
 		return true
 	}
 
-	if _, exist := ls.accessInfos[key]; !exist {
-		ls.accessInfos[key] = newAccessInfo()
+	ls.accessInfos.Lock()
+	defer ls.accessInfos.Unlock()
+
+	if _, exist := ls.accessInfos.a[key]; !exist {
+		ls.accessInfos.a[key] = newAccessInfo()
 	}
 
-	info := ls.accessInfos[key]
-	info.mutex.Lock()
-	defer info.mutex.Unlock()
+	info := ls.accessInfos.a[key]
 
 	// inc the query count
 	now := time.Now()
@@ -371,4 +391,27 @@ func (ls *libstore) needLease(key string) bool {
 		return true
 	}
 	return false
+}
+
+func (ls *libstore) delayedGC(key string) {
+
+	ls.cache.Lock()
+	item, exist := ls.cache.c[key]
+	ls.cache.Unlock()
+
+	if exist {
+		<-time.After(item.expirationTime.Sub(time.Now()))
+		ls.cache.Lock()
+		delete(ls.cache.c, key)
+		ls.cache.Unlock()
+
+		// clean access log
+		ls.accessInfos.Lock()
+		for _, v := range ls.accessInfos.a {
+			if v.log[v.lastTouched].ts.Add(time.Second * time.Duration(storagerpc.QueryCacheSeconds)).Before(time.Now()) { // not accessed recently
+				delete(ls.accessInfos.a, key)
+			}
+		}
+		ls.accessInfos.Unlock()
+	}
 }

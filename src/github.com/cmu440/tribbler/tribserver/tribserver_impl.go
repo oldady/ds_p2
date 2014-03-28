@@ -254,7 +254,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 
 	tribListKey := makeTribListKey(user)
 
-	hashIds, err := ts.Libstore.GetList(tribListKey)
+	OhashIds, err := ts.Libstore.GetList(tribListKey)
 	switch err {
 	case nil:
 	case libstore.ErrorKeyNotFound:
@@ -266,8 +266,14 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 
 	// reverse hash Id to achieve most recent tribbles first.
-	for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-		hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+	//for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+	//	hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+	//}
+
+	lenOhashIds := len(OhashIds)
+	hashIds := make([]string, Min(100, lenOhashIds))
+	for i := range hashIds {
+		hashIds[i] = OhashIds[lenOhashIds-1-i]
 	}
 
 	tribValues, err := ts.getTribValuesFromHashIds(user, hashIds)
@@ -298,7 +304,7 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribNum := 0
 
 	for i, target := range subscList {
-		hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
+		OhashIds, err := ts.Libstore.GetList(makeTribListKey(target))
 		switch err {
 		case nil:
 		case libstore.ErrorKeyNotFound:
@@ -309,8 +315,14 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 		}
 
 		// reverse hash Id to achieve most recent tribbles first.
-		for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-			hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+		//for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+		//	hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+		//}
+
+		lenOhashIds := len(OhashIds)
+		hashIds := make([]string, Min(100, lenOhashIds))
+		for i := range hashIds {
+			hashIds[i] = OhashIds[lenOhashIds-1-i]
 		}
 
 		tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
@@ -501,4 +513,11 @@ func (h *maxHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[0 : n-1]
 	return x
+}
+
+func Min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -283,11 +283,19 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 func (ts *tribServer) getTribValuesFromHashIds(user string, hashIds []string) ([]string, error) {
 	var err error
 	tribValues := make([]string, len(hashIds))
+	getValuesChan := make(chan bool)
 	for i, hashId := range hashIds {
-		tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
-		if err != nil {
-			return nil, err
-		}
+		go func() {
+			tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
+			if err != nil {
+				panic(err)
+			}
+			getValuesChan <- true
+		}()
+	}
+
+	for _ = range hashIds {
+		<-getValuesChan
 	}
 	return tribValues, nil
 }

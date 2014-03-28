@@ -13,6 +13,7 @@ import (
 	"net/rpc"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cmu440/tribbler/libstore"
@@ -283,20 +284,21 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 func (ts *tribServer) getTribValuesFromHashIds(user string, hashIds []string) ([]string, error) {
 	var err error
 	tribValues := make([]string, len(hashIds))
-	getValuesChan := make(chan bool)
+
+	var wg sync.WaitGroup
+
 	for i, hashId := range hashIds {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
 			if err != nil {
 				panic(err)
 			}
-			getValuesChan <- true
 		}()
 	}
+	wg.Wait()
 
-	for _ = range hashIds {
-		<-getValuesChan
-	}
 	return tribValues, nil
 }
 
@@ -305,16 +307,17 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribValues := make([][]string, len(subscList))
 	allTribNum := 0
 
-	getValuesChan := make(chan bool)
+	var wg sync.WaitGroup
 
 	for i, target := range subscList {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
 			switch err {
 			case nil:
 			case libstore.ErrorKeyNotFound:
 				allTribValues[i] = make([]string, 0)
-				getValuesChan <- true
 			default:
 				panic(err)
 			}
@@ -330,14 +333,9 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 			}
 			allTribNum += len(tribValues)
 			allTribValues[i] = tribValues
-
-			getValuesChan <- true
 		}()
 	}
-
-	for _ = range subscList {
-		<-getValuesChan
-	}
+	wg.Wait()
 
 	// get the most recent at most 100 tribbles.
 	// use priority queue

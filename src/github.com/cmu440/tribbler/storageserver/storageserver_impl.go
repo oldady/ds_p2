@@ -14,6 +14,8 @@ import (
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+const maxTrials = 5
+
 var leaseSeconds = storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds
 
 type storageServer struct {
@@ -396,9 +398,15 @@ func (ss *storageServer) revokeLease(key string) {
 }
 
 func (ss *storageServer) joinCluster(masterServerHostPort string) error {
+	failedNum := 0
 	for {
 		master, err := rpc.DialHTTP("tcp", masterServerHostPort)
 		if err != nil {
+			if failedNum < maxTrials {
+				failedNum++
+				time.Sleep(time.Second)
+				continue
+			}
 			return err
 		}
 
@@ -425,7 +433,7 @@ func (ss *storageServer) joinCluster(masterServerHostPort string) error {
 			return nil
 		}
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(time.Second)
 	}
 }
 

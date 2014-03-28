@@ -2,6 +2,7 @@ package libstore
 
 import (
 	"errors"
+	"fmt"
 	"net/rpc"
 	"strconv"
 	"strings"
@@ -12,8 +13,11 @@ import (
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+var _ = fmt.Println
+
 const (
 	maximumTrials = 5
+	gcEpoch       = storagerpc.LeaseSeconds
 )
 
 const (
@@ -157,9 +161,6 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	ok := false
 	for i := 0; i < maximumTrials; i++ {
 		err = master.Call("StorageServer.GetServers", &args, &reply)
-		if err != nil {
-			return nil, err
-		}
 		if reply.Status == storagerpc.OK {
 			ok = true
 			break
@@ -183,10 +184,15 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	// register the callback
 	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls))
 
+	go ls.gc()
+
 	return ls, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
+	//fmt.Println("Get", key)
+	//defer fmt.Println("Get return")
+
 	v := ls.getFromCache(key)
 	if v != nil {
 		return v.(string), nil
@@ -233,7 +239,7 @@ func (ls *libstore) Get(key string) (string, error) {
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
-		go ls.delayedGC(key)
+		//go ls.delayedGC(key)
 
 		ls.cache.Unlock()
 	}
@@ -242,10 +248,16 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
+	//fmt.Println("put", key)
+	//defer fmt.Println("put return")
+
 	return ls.generalPut(key, value, putCall)
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
+	//fmt.Println("Get list", key)
+	//defer fmt.Println("Get list return")
+
 	v := ls.getFromCache(key)
 	if v != nil {
 		return v.([]string), nil
@@ -293,7 +305,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
-		go ls.delayedGC(key)
+		//go ls.delayedGC(key)
 
 		ls.cache.Unlock()
 	}
@@ -302,10 +314,16 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
+	//fmt.Println("remove", key)
+	//defer fmt.Println("remove return")
+
 	return ls.generalPut(key, removeItem, removeFromListCall)
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
+	//fmt.Println("append", key)
+	//defer fmt.Println("append return")
+
 	return ls.generalPut(key, newItem, appendToListCall)
 }
 
@@ -444,6 +462,30 @@ func (ls *libstore) needLease(key string) bool {
 		return true
 	}
 	return false
+}
+
+func (ls *libstore) gc() {
+	for {
+		time.Sleep(time.Second * time.Duration(gcEpoch))
+
+		// cleaning the cache
+		ls.cache.Lock()
+		for key, item := range ls.cache.c {
+			if item.expirationTime.Before(time.Now()) {
+				delete(ls.cache.c, key)
+			}
+		}
+		ls.cache.Unlock()
+
+		// cleaning the access log
+		ls.accessInfoHub.Lock()
+		for k, v := range ls.accessInfoHub.a {
+			if v.log[v.lastTouched].ts.Add(time.Second * time.Duration(storagerpc.QueryCacheSeconds)).Before(time.Now()) { // not accessed recently
+				delete(ls.accessInfoHub.a, k)
+			}
+		}
+		ls.accessInfoHub.Unlock()
+	}
 }
 
 func (ls *libstore) delayedGC(key string) {

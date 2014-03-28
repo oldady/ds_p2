@@ -2,7 +2,6 @@ package libstore
 
 import (
 	"errors"
-	"fmt"
 	"net/rpc"
 	"strconv"
 	"strings"
@@ -12,8 +11,6 @@ import (
 	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
-
-var _ = fmt.Println
 
 const (
 	maximumTrials = 5
@@ -190,9 +187,6 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	//fmt.Println("Get", key)
-	//defer fmt.Println("Get return")
-
 	v := ls.getFromCache(key)
 	if v != nil {
 		return v.(string), nil
@@ -234,13 +228,10 @@ func (ls *libstore) Get(key string) (string, error) {
 
 	if reply.Lease.Granted {
 		ls.cache.Lock()
-
 		ls.cache.c[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
-		//go ls.delayedGC(key)
-
 		ls.cache.Unlock()
 	}
 
@@ -248,16 +239,10 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
-	//fmt.Println("put", key)
-	//defer fmt.Println("put return")
-
 	return ls.generalPut(key, value, putCall)
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	//fmt.Println("Get list", key)
-	//defer fmt.Println("Get list return")
-
 	v := ls.getFromCache(key)
 	if v != nil {
 		return v.([]string), nil
@@ -300,13 +285,10 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	// add to cache
 	if reply.Lease.Granted {
 		ls.cache.Lock()
-
 		ls.cache.c[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
-		//go ls.delayedGC(key)
-
 		ls.cache.Unlock()
 	}
 
@@ -314,16 +296,10 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	//fmt.Println("remove", key)
-	//defer fmt.Println("remove return")
-
 	return ls.generalPut(key, removeItem, removeFromListCall)
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	//fmt.Println("append", key)
-	//defer fmt.Println("append return")
-
 	return ls.generalPut(key, newItem, appendToListCall)
 }
 
@@ -436,7 +412,7 @@ func (ls *libstore) needLease(key string) bool {
 
 	info := ls.accessInfoHub.a[key]
 
-	// inc the query count
+	// increase the query count
 	now := time.Now()
 	queueLen := len(info.log)
 
@@ -445,16 +421,21 @@ func (ls *libstore) needLease(key string) bool {
 	info.log[lastTouched].ts = &now
 	info.lastTouched = lastTouched
 
-	// sum the query counts
+	// read the log in reverse order and sum up the query counts
 	totalCount := 0
-	for i := range info.log {
+	for i := 0; i < len(info.log); i++ {
 		record := info.log[(lastTouched-i+queueLen)%queueLen]
 
 		// ignore empty or stale counts
-		if record.ts == nil ||
-			(now.Unix()-record.ts.Unix() >= storagerpc.QueryCacheSeconds) {
+		if record.ts == nil {
 			break
 		}
+
+		leaselastingDuration := now.Unix() - record.ts.Unix()
+		if leaselastingDuration >= storagerpc.QueryCacheSeconds {
+			break
+		}
+
 		totalCount = totalCount + record.cnt
 	}
 
@@ -480,31 +461,9 @@ func (ls *libstore) gc() {
 		// cleaning the access log
 		ls.accessInfoHub.Lock()
 		for k, v := range ls.accessInfoHub.a {
-			if v.log[v.lastTouched].ts.Add(time.Second * time.Duration(storagerpc.QueryCacheSeconds)).Before(time.Now()) { // not accessed recently
+			inactiveDuration := time.Now().Sub(*v.log[v.lastTouched].ts)
+			if inactiveDuration > time.Duration(storagerpc.QueryCacheSeconds) {
 				delete(ls.accessInfoHub.a, k)
-			}
-		}
-		ls.accessInfoHub.Unlock()
-	}
-}
-
-func (ls *libstore) delayedGC(key string) {
-
-	ls.cache.Lock()
-	item, exist := ls.cache.c[key]
-	ls.cache.Unlock()
-
-	if exist {
-		<-time.After(item.expirationTime.Sub(time.Now()))
-		ls.cache.Lock()
-		delete(ls.cache.c, key)
-		ls.cache.Unlock()
-
-		// clean access log
-		ls.accessInfoHub.Lock()
-		for _, v := range ls.accessInfoHub.a {
-			if v.log[v.lastTouched].ts.Add(time.Second * time.Duration(storagerpc.QueryCacheSeconds)).Before(time.Now()) { // not accessed recently
-				delete(ls.accessInfoHub.a, key)
 			}
 		}
 		ls.accessInfoHub.Unlock()

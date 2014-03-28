@@ -318,40 +318,12 @@ func (ss *storageServer) generalGet(args *storagerpc.GetArgs) (*storagerpc.GetRe
 		Status: storagerpc.OK,
 	}
 
+	ss.rwl.RUnlock()
+
 	if args.WantLease {
-		// upgrade to write lock
-		ss.rwl.RUnlock()
-		ss.rwl.Lock()
-
-		// refuse the lease request
-		if ss.inRevoking[args.Key] {
-			reply.Lease = storagerpc.Lease{Granted: false}
-			ss.rwl.Unlock()
-			return reply, value
-		}
-
-		// append a lease record
-		leaseList := ss.leases[args.Key]
-		if leaseList == nil {
-			ss.leases[args.Key] = list.New()
-			leaseList = ss.leases[args.Key]
-		}
-
-		leaseList.PushBack(&leaseRecord{
-			expirationTime: time.Now().Add(time.Second * time.Duration(leaseSeconds)),
-			hostport:       args.HostPort,
-		})
-
-		reply.Lease = storagerpc.Lease{
-			Granted:      true,
-			ValidSeconds: storagerpc.LeaseSeconds,
-		}
-
-		ss.rwl.Unlock()
-		return reply, value
+		return ss.addLeaseRecord(args, reply), value
 	}
 
-	ss.rwl.RUnlock()
 	return reply, value
 }
 
@@ -446,4 +418,33 @@ func (ss *storageServer) waitForRevoking(key string) {
 		}
 		ss.cond.Wait()
 	}
+}
+
+func (ss *storageServer) addLeaseRecord(args *storagerpc.GetArgs, reply *storagerpc.GetReply) *storagerpc.GetReply {
+	ss.rwl.Lock()
+	defer ss.rwl.Unlock()
+
+	// to refuse the lease request
+	if ss.inRevoking[args.Key] {
+		reply.Lease = storagerpc.Lease{Granted: false}
+		return reply
+	}
+
+	// append a lease record
+	leaseList := ss.leases[args.Key]
+	if leaseList == nil {
+		ss.leases[args.Key] = list.New()
+		leaseList = ss.leases[args.Key]
+	}
+
+	leaseList.PushBack(&leaseRecord{
+		expirationTime: time.Now().Add(time.Second * time.Duration(leaseSeconds)),
+		hostport:       args.HostPort,
+	})
+
+	reply.Lease = storagerpc.Lease{
+		Granted:      true,
+		ValidSeconds: storagerpc.LeaseSeconds,
+	}
+	return reply
 }

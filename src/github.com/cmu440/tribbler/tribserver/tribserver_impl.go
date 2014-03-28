@@ -152,8 +152,7 @@ func (ts *tribServer) doSub(user, target string, reply *tribrpc.SubscriptionRepl
 	case doSubRemove:
 		err = ts.Libstore.RemoveFromList(subscListKey, target)
 	}
-	if err != nil {
-		return err
+	if err == nil { // ignore errors
 	}
 
 	reply.Status = tribrpc.OK
@@ -272,8 +271,8 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 
 	tribValues, err := ts.getTribValuesFromHashIds(user, hashIds)
-	if err != nil {
-		return err
+	if err != nil { // ignore error
+		// return err
 	}
 
 	reply.Tribbles = makeTribbles(user, tribValues)
@@ -404,8 +403,8 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	}
 
 	tribbles, err := ts.getTribsFromSubs(subscList)
-	if err != nil {
-		return err
+	if err != nil { // ignore error
+		// return err
 	}
 
 	reply.Tribbles = tribbles

@@ -254,7 +254,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 
 	tribListKey := makeTribListKey(user)
 
-	OhashIds, err := ts.Libstore.GetList(tribListKey)
+	hashIds, err := ts.Libstore.GetList(tribListKey)
 	switch err {
 	case nil:
 	case libstore.ErrorKeyNotFound:
@@ -266,14 +266,8 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 
 	// reverse hash Id to achieve most recent tribbles first.
-	//for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-	//	hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
-	//}
-
-	lenOhashIds := len(OhashIds)
-	hashIds := make([]string, Min(100, lenOhashIds))
-	for i := range hashIds {
-		hashIds[i] = OhashIds[lenOhashIds-1-i]
+	for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+		hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
 	}
 
 	tribValues, err := ts.getTribValuesFromHashIds(user, hashIds)
@@ -303,34 +297,38 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribValues := make([][]string, len(subscList))
 	allTribNum := 0
 
+	getValuesChan := make(chan bool)
+
 	for i, target := range subscList {
-		OhashIds, err := ts.Libstore.GetList(makeTribListKey(target))
-		switch err {
-		case nil:
-		case libstore.ErrorKeyNotFound:
-			allTribValues[i] = make([]string, 0)
-			continue
-		default:
-			return nil, err
-		}
+		go func() {
+			hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
+			switch err {
+			case nil:
+			case libstore.ErrorKeyNotFound:
+				allTribValues[i] = make([]string, 0)
+				getValuesChan <- true
+			default:
+				panic(err)
+			}
 
-		// reverse hash Id to achieve most recent tribbles first.
-		//for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-		//	hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
-		//}
+			// reverse hash Id to achieve most recent tribbles first.
+			for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+				hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+			}
 
-		lenOhashIds := len(OhashIds)
-		hashIds := make([]string, Min(100, lenOhashIds))
-		for i := range hashIds {
-			hashIds[i] = OhashIds[lenOhashIds-1-i]
-		}
+			tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
+			if err != nil {
+				panic(err)
+			}
+			allTribNum += len(tribValues)
+			allTribValues[i] = tribValues
 
-		tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
-		if err != nil {
-			return nil, err
-		}
-		allTribNum += len(tribValues)
-		allTribValues[i] = tribValues
+			getValuesChan <- true
+		}()
+	}
+
+	for _ = range subscList {
+		<-getValuesChan
 	}
 
 	// get the most recent at most 100 tribbles.
@@ -513,11 +511,4 @@ func (h *maxHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[0 : n-1]
 	return x
-}
-
-func Min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

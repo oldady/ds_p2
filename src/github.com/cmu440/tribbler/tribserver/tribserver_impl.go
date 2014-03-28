@@ -298,28 +298,38 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribValues := make([][]string, len(subscList))
 	allTribNum := 0
 
+	getValuesChan := make(chan bool)
+
 	for i, target := range subscList {
-		hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
-		switch err {
-		case nil:
-		case libstore.ErrorKeyNotFound:
-			allTribValues[i] = make([]string, 0)
-			continue
-		default:
-			return nil, err
-		}
+		go func() {
+			hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
+			switch err {
+			case nil:
+			case libstore.ErrorKeyNotFound:
+				allTribValues[i] = make([]string, 0)
+				getValuesChan <- true
+			default:
+				panic(err)
+			}
 
-		// reverse hash Id to achieve most recent tribbles first.
-		for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-			hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
-		}
+			// reverse hash Id to achieve most recent tribbles first.
+			for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
+				hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+			}
 
-		tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
-		if err != nil {
-			return nil, err
-		}
-		allTribNum += len(tribValues)
-		allTribValues[i] = tribValues
+			tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
+			if err != nil {
+				panic(err)
+			}
+			allTribNum += len(tribValues)
+			allTribValues[i] = tribValues
+
+			getValuesChan <- true
+		}()
+	}
+
+	for _ = range subscList {
+		<-getValuesChan
 	}
 
 	// get the most recent at most 100 tribbles.

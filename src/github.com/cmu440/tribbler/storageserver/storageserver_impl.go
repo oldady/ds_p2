@@ -275,8 +275,8 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 //         2, if the key is in the range of the server
 // return true if ok, false otherwise
 func (ss *storageServer) assertKeyAndServer(key string) (storagerpc.Status, bool) {
-	ss.infoRWL.RLock()
-	defer ss.infoRWL.RUnlock()
+	//ss.infoRWL.RLock()
+	//defer ss.infoRWL.RUnlock()
 
 	if !ss.isReady {
 		return storagerpc.NotReady, false

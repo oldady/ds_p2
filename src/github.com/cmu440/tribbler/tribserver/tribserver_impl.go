@@ -289,13 +289,13 @@ func (ts *tribServer) getTribValuesFromHashIds(user string, hashIds []string) ([
 
 	for i, hashId := range hashIds {
 		wg.Add(1)
-		go func() {
+		go func(i int, hashId string) {
 			defer wg.Done()
 			tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
 			if err != nil {
 				panic(err)
 			}
-		}()
+		}(i, hashId)
 	}
 	wg.Wait()
 
@@ -308,10 +308,11 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribNum := 0
 
 	var wg sync.WaitGroup
+	var numlock sync.Mutex
 
 	for i, target := range subscList {
 		wg.Add(1)
-		go func() {
+		go func(i int, target string) {
 			defer wg.Done()
 			hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
 			switch err {
@@ -331,9 +332,13 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 			if err != nil {
 				panic(err)
 			}
+
+			numlock.Lock()
 			allTribNum += len(tribValues)
+			numlock.Unlock()
+
 			allTribValues[i] = tribValues
-		}()
+		}(i, target)
 	}
 	wg.Wait()
 

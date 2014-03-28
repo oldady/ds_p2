@@ -427,11 +427,15 @@ func (ls *libstore) needLease(key string) bool {
 		record := info.log[(lastTouched-i+queueLen)%queueLen]
 
 		// ignore empty or stale counts
-		leaselastingDuration := now.Unix() - record.ts.Unix()
-		if record.ts == nil || leaselastingDuration >= storagerpc.QueryCacheSeconds {
-
+		if record.ts == nil {
 			break
 		}
+
+		leaselastingDuration := now.Unix() - record.ts.Unix()
+		if leaselastingDuration >= storagerpc.QueryCacheSeconds {
+			break
+		}
+
 		totalCount = totalCount + record.cnt
 	}
 

@@ -427,7 +427,6 @@ func (ss *storageServer) addLeaseRecord(args *storagerpc.GetArgs, reply *storage
 	// to refuse the lease request
 	if ss.inRevoking[args.Key] {
 		reply.Lease = storagerpc.Lease{Granted: false}
-		ss.rwl.Unlock()
 		return reply
 	}
 
@@ -447,7 +446,5 @@ func (ss *storageServer) addLeaseRecord(args *storagerpc.GetArgs, reply *storage
 		Granted:      true,
 		ValidSeconds: storagerpc.LeaseSeconds,
 	}
-
-	ss.rwl.Unlock()
 	return reply
 }

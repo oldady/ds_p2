@@ -193,11 +193,10 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 	defer ss.rwl.Unlock()
 
 	ss.waitForRevoking(args.Key)
-
 	ss.revokeLease(args.Key)
+
 	ss.store[args.Key] = args.Value
 	reply.Status = storagerpc.OK
-
 	return nil
 }
 

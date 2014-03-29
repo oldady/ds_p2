@@ -13,6 +13,7 @@ import (
 	"net/rpc"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cmu440/tribbler/libstore"
@@ -34,6 +35,7 @@ const (
 )
 
 type tribServer struct {
+	myHostPort string
 	libstore.Libstore
 }
 
@@ -50,7 +52,8 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 	}
 
 	ts := &tribServer{
-		Libstore: newStore,
+		myHostPort: myHostPort,
+		Libstore:   newStore,
 	}
 
 	err = rpc.RegisterName("TribServer", tribrpc.Wrap(ts))
@@ -254,7 +257,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 
 	tribListKey := makeTribListKey(user)
 
-	hashIds, err := ts.Libstore.GetList(tribListKey)
+	totalHashIds, err := ts.Libstore.GetList(tribListKey)
 	switch err {
 	case nil:
 	case libstore.ErrorKeyNotFound:
@@ -266,8 +269,10 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 
 	// reverse hash Id to achieve most recent tribbles first.
-	for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-		hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
+	length := Min(len(totalHashIds), maxGetTribbleNum)
+	hashIds := make([]string, length)
+	for i := range hashIds {
+		hashIds[i] = totalHashIds[len(totalHashIds)-i-1]
 	}
 
 	tribValues, err := ts.getTribValuesFromHashIds(user, hashIds)
@@ -283,13 +288,35 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 func (ts *tribServer) getTribValuesFromHashIds(user string, hashIds []string) ([]string, error) {
 	var err error
 	tribValues := make([]string, len(hashIds))
-	for i, hashId := range hashIds {
-		tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashId))
-		if err != nil {
-			return nil, err
+	returnValues := make([]string, len(hashIds))
+
+	var wg sync.WaitGroup
+
+	wg.Add(len(hashIds))
+
+	for i := range hashIds {
+		go func(i int) {
+			defer wg.Done()
+			tribValues[i], err = ts.Libstore.Get(makeTribId(user, hashIds[i]))
+			if err != nil {
+				if err != libstore.ErrorKeyNotFound { // ignore cross inconsistency
+					panic(err)
+
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	j := 0
+	for i := range tribValues {
+		if tribValues[i] != "" {
+			returnValues[j] = tribValues[i]
+			j++
 		}
 	}
-	return tribValues, nil
+
+	return returnValues[0:j], nil
 }
 
 func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, error) {
@@ -297,28 +324,37 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 	allTribValues := make([][]string, len(subscList))
 	allTribNum := 0
 
-	for i, target := range subscList {
-		hashIds, err := ts.Libstore.GetList(makeTribListKey(target))
-		switch err {
-		case nil:
-		case libstore.ErrorKeyNotFound:
-			allTribValues[i] = make([]string, 0)
-			continue
-		default:
-			return nil, err
-		}
+	done := make(chan int, len(subscList))
+	for i := range subscList {
+		go func(i int) {
+			totalHashIds, err := ts.Libstore.GetList(makeTribListKey(subscList[i]))
+			switch err {
+			case nil:
+			case libstore.ErrorKeyNotFound:
+				allTribValues[i] = make([]string, 0)
+			default:
+				panic(err)
+			}
 
-		// reverse hash Id to achieve most recent tribbles first.
-		for i, j := 0, len(hashIds)-1; i < j; i, j = i+1, j-1 {
-			hashIds[i], hashIds[j] = hashIds[j], hashIds[i]
-		}
+			// reverse hash Id to achieve most recent tribbles first.
+			length := Min(len(totalHashIds), maxGetTribbleNum)
+			hashIds := make([]string, length)
+			for i := range hashIds {
+				hashIds[i] = totalHashIds[len(totalHashIds)-i-1]
+			}
 
-		tribValues, err := ts.getTribValuesFromHashIds(target, hashIds)
-		if err != nil {
-			return nil, err
-		}
-		allTribNum += len(tribValues)
-		allTribValues[i] = tribValues
+			tribValues, err := ts.getTribValuesFromHashIds(subscList[i], hashIds)
+			if err != nil {
+				panic(err)
+			}
+
+			done <- len(tribValues)
+			allTribValues[i] = tribValues
+		}(i)
+	}
+
+	for i := 0; i < len(subscList); i++ {
+		allTribNum += <-done
 	}
 
 	// get the most recent at most 100 tribbles.
@@ -343,7 +379,10 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 		if err != nil {
 			panic("")
 		}
-		heap.Push(h, item)
+
+		if item != nil {
+			heap.Push(h, item)
+		}
 		pos[i]++
 	}
 
@@ -359,7 +398,9 @@ func (ts *tribServer) getTribsFromSubs(subscList []string) ([]tribrpc.Tribble, e
 			if err != nil {
 				panic("")
 			}
-			heap.Push(h, item)
+			if item != nil {
+				heap.Push(h, item)
+			}
 			pos[i]++
 		}
 	}
@@ -456,7 +497,6 @@ func makeTribbles(user string, tribValues []string) []tribrpc.Tribble {
 
 func makeHeapItem(tribValue string, index int) (*heapItem, error) {
 	var err error
-
 	hi := &heapItem{
 		index: index,
 		value: tribValue,
@@ -501,4 +541,11 @@ func (h *maxHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[0 : n-1]
 	return x
+}
+
+func Min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

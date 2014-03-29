@@ -227,12 +227,12 @@ func (ls *libstore) Get(key string) (string, error) {
 	}
 
 	if reply.Lease.Granted {
-		//ls.cache.Lock()
+		ls.cache.Lock()
 		ls.cache.c[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
-		//ls.cache.Unlock()
+		ls.cache.Unlock()
 	}
 
 	return reply.Value, nil
@@ -284,12 +284,12 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 
 	// add to cache
 	if reply.Lease.Granted {
-		//ls.cache.Lock()
+		ls.cache.Lock()
 		ls.cache.c[key] = &cachedItem{
 			value:          reply.Value,
 			expirationTime: time.Now().Add(time.Second * time.Duration(reply.Lease.ValidSeconds)),
 		}
-		//ls.cache.Unlock()
+		ls.cache.Unlock()
 	}
 
 	return reply.Value, nil
@@ -304,8 +304,8 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	//ls.cache.Lock()
-	//defer ls.cache.Unlock()
+	ls.cache.Lock()
+	defer ls.cache.Unlock()
 
 	delete(ls.cache.c, args.Key)
 	reply.Status = storagerpc.OK
@@ -371,8 +371,8 @@ func (ls *libstore) generalPut(key, value string, callType int) error {
 }
 
 func (ls *libstore) getFromCache(key string) interface{} {
-	//ls.cache.Lock()
-	//defer ls.cache.Unlock()
+	ls.cache.Lock()
+	defer ls.cache.Unlock()
 
 	c, ok := ls.cache.c[key]
 	if ok {
@@ -394,7 +394,7 @@ func (ls *libstore) needLease(key string) bool {
 		return true
 	}
 
-	//ls.accessInfoHub.Lock()
+	ls.accessInfoHub.Lock()
 
 	if _, exist := ls.accessInfoHub.a[key]; !exist {
 		ls.accessInfoHub.a[key] = newAccessInfo()
@@ -411,10 +411,10 @@ func (ls *libstore) needLease(key string) bool {
 	info.log[lastTouched].ts = &now
 	info.lastTouched = lastTouched
 
-	//ls.accessInfoHub.Unlock()
+	ls.accessInfoHub.Unlock()
 
-	//ls.accessInfoHub.RLock()
-	//defer ls.accessInfoHub.RUnlock()
+	ls.accessInfoHub.RLock()
+	defer ls.accessInfoHub.RUnlock()
 
 	// read the log in reverse order and sum up the query counts
 	totalCount := 0
@@ -445,22 +445,22 @@ func (ls *libstore) gc() {
 		time.Sleep(time.Second * time.Duration(gcEpoch))
 
 		// cleaning the cache
-		//ls.cache.Lock()
+		ls.cache.Lock()
 		for key, item := range ls.cache.c {
 			if item.expirationTime.Before(time.Now()) {
 				delete(ls.cache.c, key)
 			}
 		}
-		//ls.cache.Unlock()
+		ls.cache.Unlock()
 
 		// cleaning the access log
-		//ls.accessInfoHub.Lock()
+		ls.accessInfoHub.Lock()
 		for k, v := range ls.accessInfoHub.a {
 			inactiveDuration := time.Now().Sub(*v.log[v.lastTouched].ts)
 			if inactiveDuration > time.Duration(storagerpc.QueryCacheSeconds) {
 				delete(ls.accessInfoHub.a, k)
 			}
 		}
-		//ls.accessInfoHub.Unlock()
+		ls.accessInfoHub.Unlock()
 	}
 }
